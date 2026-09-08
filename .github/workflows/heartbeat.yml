@@ -65,7 +65,7 @@ jobs:
       - name: Public site answers
         run: |
           for attempt in 1 2 3; do
-            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$SITE_URL" || echo 000)
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$SITE_URL") || code=000
             echo "attempt $attempt: HTTP $code"
             [ "$code" = "200" ] && exit 0
             [ "$attempt" = 3 ] || sleep 20
@@ -90,7 +90,7 @@ jobs:
           [ -n "$edge_ip" ] || { echo "the public site's address did not resolve"; exit 1; }
           for attempt in 1 2 3; do
             code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
-              --resolve "$EDGE_HOST:443:$edge_ip" "https://$EDGE_HOST/healthz" || echo 000)
+              --resolve "$EDGE_HOST:443:$edge_ip" "https://$EDGE_HOST/healthz") || code=000
             echo "attempt $attempt: HTTP $code"
             [ "$code" != "000" ] && exit 0
             [ "$attempt" = 3 ] || sleep 20
