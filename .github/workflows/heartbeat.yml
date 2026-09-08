@@ -78,12 +78,18 @@ jobs:
       # name onto the same edge address. SNI and Host then carry the vhost, the
       # wildcard certificate covers it, and nginx answers.
       #
-      # Any HTTP status counts as a pass, including the 403 the edge allow-list
-      # gives a runner on the internet. That proof is small but real: proxy-public
-      # is alive and still serving the vhost. Only a connection that never comes
-      # up fails. Exempt GET /healthz from the allow-list in valentis-proxy - it
-      # returns {"status":"ok"} and no data - and this turns into a real check of
-      # OpenObserve itself, which is the one blind spot the step above admits.
+      # 200 is required, and it is a check of OpenObserve rather than of nginx:
+      # valentis-proxy v2.15.1 exempts GET /healthz from the vhost's allow-list,
+      # so what answers here is the application behind the proxy. The exemption is
+      # that one path only - a location's own allow replaces the server-level deny
+      # instead of adding to it - measured from this workflow across the release:
+      # 403 at 12:20, 200 at 12:45 on 2026-09-08, same URL, same runner network.
+      #
+      # The failure modes are therefore distinguishable in the log. 502 or 504:
+      # nginx is up and OpenObserve is not, which is the blind spot the step above
+      # admits, since the public site can render while monitoring is dead. 403: the
+      # exemption is gone, so a proxy release rolled back the vhost. 000: nothing
+      # answered on 443 at all.
       - name: Monitoring edge answers
         run: |
           edge_ip=$(getent ahostsv4 "$SITE_HOST" | awk '{print $1; exit}')
@@ -92,8 +98,8 @@ jobs:
             code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
               --resolve "$EDGE_HOST:443:$edge_ip" "https://$EDGE_HOST/healthz") || code=000
             echo "attempt $attempt: HTTP $code"
-            [ "$code" != "000" ] && exit 0
+            [ "$code" = "200" ] && exit 0
             [ "$attempt" = 3 ] || sleep 20
           done
-          echo "the monitoring edge did not answer at all in three attempts"
+          echo "the monitoring edge did not answer 200 in three attempts"
           exit 1
