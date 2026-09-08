@@ -30,18 +30,22 @@ GitHub mejlar den som äger workflowet när en schemalagd körning misslyckas
 (Settings → Notifications → Actions, *Send notifications for failed workflows
 only*).
 
-### Adresserna ligger i repo-variabler
+### Adresserna ligger utanför filen
 
 Övervakningens vhost har med flit ingen publik DNS-post. Att skriva namnet i en
-publik fil vore att betala den obskyriteten för ingenting, så båda adresserna är
-repository variables (Settings → Secrets and variables → Actions → Variables),
-och första steget kör `::add-mask::` på dem så att de hålls utanför de publika
-körningsloggarna också:
+publik fil vore att betala den obskyriteten för ingenting.
 
-| Variabel | Betydelse |
-|----------|-----------|
-| `HEARTBEAT_SITE_URL` | Publika sajten som hämtas, t.ex. `https://www.example.com/` |
-| `HEARTBEAT_EDGE_HOST` | Övervakningens vhost på samma kant, t.ex. `koll.example.com` |
+| Namn | Typ | Betydelse |
+|------|-----|-----------|
+| `HEARTBEAT_SITE_URL` | variable | Publika sajten som hämtas, t.ex. `https://www.example.com/` |
+| `HEARTBEAT_EDGE_HOST` | **secret** | Övervakningens vhost på samma kant |
+
+Vhosten är en secret och inte en variable, och det är inte kosmetika: runnern
+skriver ut varje stegs `env`-block *innan* steget kör, så ett `::add-mask::` i
+första steget kommer för sent för sitt eget block och värdet står i klartext i
+den publika loggen. Secrets registreras som mask redan vid jobbstart och blir
+`***` överallt. Den publika sajten har inget att dölja och får förbli en
+variable, där värdet går att läsa tillbaka i UI:t.
 
 Saknas någon av dem failar jobbet direkt med vilken det gäller, i stället för att
 `curl` mot en tom sträng.

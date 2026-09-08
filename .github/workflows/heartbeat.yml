@@ -19,14 +19,16 @@
 # a repository this quiet that is the failure mode to watch: GitHub mails a
 # warning some days ahead, and the schedule has to be re-enabled by hand after.
 #
-# The addresses are not in this file. The repository is public, and the
-# monitoring vhost deliberately has no public DNS record - naming it here would
-# spend that obscurity for nothing. Both values are repository variables
-# (Settings -> Secrets and variables -> Actions -> Variables), and the first step
-# masks them so they stay out of the public run logs too:
+# The monitoring vhost is not in this file. The repository is public, and that
+# host deliberately has no public DNS record - naming it here would spend that
+# obscurity for nothing. It is a secret rather than a variable because the runner
+# prints each step's env block before the step runs: an ::add-mask:: in the first
+# step comes too late for that first block, while secrets are registered as masks
+# at job start and read *** everywhere. The public site has nothing to hide and
+# stays a variable, where its value can be read back in the UI.
 #
-#   HEARTBEAT_SITE_URL   the public site to fetch, e.g. https://www.example.com/
-#   HEARTBEAT_EDGE_HOST  the monitoring vhost on the same edge, e.g. koll.example.com
+#   vars.HEARTBEAT_SITE_URL     the public site to fetch, e.g. https://www.example.com/
+#   secrets.HEARTBEAT_EDGE_HOST the monitoring vhost on the same edge
 name: heartbeat
 
 on:
@@ -43,20 +45,17 @@ jobs:
     timeout-minutes: 5
     env:
       SITE_URL: ${{ vars.HEARTBEAT_SITE_URL }}
-      EDGE_HOST: ${{ vars.HEARTBEAT_EDGE_HOST }}
+      EDGE_HOST: ${{ secrets.HEARTBEAT_EDGE_HOST }}
     steps:
-      # add-mask covers the rest of the job, so it has to happen before anything
-      # can echo a value or curl can name a host in an error. Repository
-      # variables are not masked on their own the way secrets are.
-      - name: Keep the addresses out of the public log
+      # Fail on a missing value with the name of the one that is missing, rather
+      # than letting curl run against an empty string three times and report a
+      # site outage that is really a configuration mistake.
+      - name: Check the configuration
         run: |
-          [ -n "$SITE_URL" ] || { echo "HEARTBEAT_SITE_URL is not set"; exit 1; }
-          [ -n "$EDGE_HOST" ] || { echo "HEARTBEAT_EDGE_HOST is not set"; exit 1; }
-          echo "::add-mask::$SITE_URL"
-          echo "::add-mask::$EDGE_HOST"
+          [ -n "$SITE_URL" ] || { echo "vars.HEARTBEAT_SITE_URL is not set"; exit 1; }
+          [ -n "$EDGE_HOST" ] || { echo "secrets.HEARTBEAT_EDGE_HOST is not set"; exit 1; }
           site_host=${SITE_URL#*://}
           site_host=${site_host%%/*}
-          echo "::add-mask::$site_host"
           echo "SITE_HOST=$site_host" >> "$GITHUB_ENV"
 
       # The public site proves the whole chain from the internet: the VM is up,
