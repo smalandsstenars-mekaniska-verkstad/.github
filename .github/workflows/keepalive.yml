@@ -1,0 +1,54 @@
+# heartbeat.yml only helps while it is still scheduled, and in a public
+# repository GitHub disables scheduled workflows once 60 days pass with no
+# repository activity - which is exactly what this repository looks like, since
+# nothing here is under development. Only new commits reset that counter: a
+# workflow_dispatch run does not, and neither does a release tag.
+#
+# So this pushes an empty commit, but only when one is actually due. It checks
+# weekly and commits when the newest commit is older than KEEPALIVE_MAX_AGE_DAYS,
+# which leaves about two weeks of margin for GitHub's best-effort scheduling to
+# skip a run or two, and keeps the history to roughly eight commits a year rather
+# than one every Monday.
+#
+# The push uses GITHUB_TOKEN, so the commit does not trigger any workflow - no
+# loop, and heartbeat.yml is not woken up off-schedule by it.
+name: keepalive
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Commit even if one is not due yet"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      KEEPALIVE_MAX_AGE_DAYS: 45
+      FORCE: ${{ inputs.force }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Commit if the repository is going quiet
+        run: |
+          age=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+          echo "newest commit is $age days old, threshold is $KEEPALIVE_MAX_AGE_DAYS"
+          if [ "$age" -lt "$KEEPALIVE_MAX_AGE_DAYS" ] && [ "$FORCE" != "true" ]; then
+            echo "nothing to do"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keepalive
+
+          Resets GitHub's 60-day inactivity counter so the heartbeat schedule
+          stays enabled. See README."
+          git push

@@ -1,0 +1,100 @@
+# The one alert that cannot live inside the monitoring stack: an observer outside
+# the house. Every alert in OpenObserve is evaluated by the same process that
+# would have to report that it is not running, and the hypervisor's VM health
+# check has the same problem one level down - it watches the web VM from outside,
+# then ships what it saw to the OpenObserve running inside that VM.
+#
+# GitHub is the outside observer we already pay for. A failed scheduled run
+# emails the account that owns the workflow (Settings -> Notifications ->
+# Actions, "Send notifications for failed workflows only"), so no new service is
+# needed. It lives in this repository rather than in valentis-ansible because it
+# watches the platform, not the provisioning of it.
+#
+# What it does NOT give: GitHub runs scheduled workflows on a best-effort basis,
+# delays them under load, and disables schedules in a repository with no activity
+# for 60 days. So this is a dead man's switch for an outage lasting tens of
+# minutes, not a latency monitor - which is exactly the gap it is meant to close.
+# The 60-day rule is documented for public repositories, which this one is, and
+# only new commits reset the counter - a manual run or a release tag does not. In
+# a repository this quiet that is the failure mode to watch: GitHub mails a
+# warning some days ahead, and the schedule has to be re-enabled by hand after.
+#
+# The addresses are not in this file. The repository is public, and the
+# monitoring vhost deliberately has no public DNS record - naming it here would
+# spend that obscurity for nothing. Both values are repository variables
+# (Settings -> Secrets and variables -> Actions -> Variables), and the first step
+# masks them so they stay out of the public run logs too:
+#
+#   HEARTBEAT_SITE_URL   the public site to fetch, e.g. https://www.example.com/
+#   HEARTBEAT_EDGE_HOST  the monitoring vhost on the same edge, e.g. koll.example.com
+name: heartbeat
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reachable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SITE_URL: ${{ vars.HEARTBEAT_SITE_URL }}
+      EDGE_HOST: ${{ vars.HEARTBEAT_EDGE_HOST }}
+    steps:
+      # add-mask covers the rest of the job, so it has to happen before anything
+      # can echo a value or curl can name a host in an error. Repository
+      # variables are not masked on their own the way secrets are.
+      - name: Keep the addresses out of the public log
+        run: |
+          [ -n "$SITE_URL" ] || { echo "HEARTBEAT_SITE_URL is not set"; exit 1; }
+          [ -n "$EDGE_HOST" ] || { echo "HEARTBEAT_EDGE_HOST is not set"; exit 1; }
+          echo "::add-mask::$SITE_URL"
+          echo "::add-mask::$EDGE_HOST"
+          site_host=${SITE_URL#*://}
+          site_host=${site_host%%/*}
+          echo "::add-mask::$site_host"
+          echo "SITE_HOST=$site_host" >> "$GITHUB_ENV"
+
+      # The public site proves the whole chain from the internet: the VM is up,
+      # Docker Swarm is up, proxy-public answers TLS and a web container renders.
+      # OpenObserve runs on the same machine, so this failing means the alerts in
+      # OpenObserve are not running either.
+      - name: Public site answers
+        run: |
+          for attempt in 1 2 3; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$SITE_URL" || echo 000)
+            echo "attempt $attempt: HTTP $code"
+            [ "$code" = "200" ] && exit 0
+            [ "$attempt" = 3 ] || sleep 20
+          done
+          echo "the public site did not answer 200 in three attempts"
+          exit 1
+
+      # The monitoring vhost has no public DNS record, so a runner cannot look it
+      # up - which is why this resolves the public site instead and forces the
+      # name onto the same edge address. SNI and Host then carry the vhost, the
+      # wildcard certificate covers it, and nginx answers.
+      #
+      # Any HTTP status counts as a pass, including the 403 the edge allow-list
+      # gives a runner on the internet. That proof is small but real: proxy-public
+      # is alive and still serving the vhost. Only a connection that never comes
+      # up fails. Exempt GET /healthz from the allow-list in valentis-proxy - it
+      # returns {"status":"ok"} and no data - and this turns into a real check of
+      # OpenObserve itself, which is the one blind spot the step above admits.
+      - name: Monitoring edge answers
+        run: |
+          edge_ip=$(getent ahostsv4 "$SITE_HOST" | awk '{print $1; exit}')
+          [ -n "$edge_ip" ] || { echo "the public site's address did not resolve"; exit 1; }
+          for attempt in 1 2 3; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+              --resolve "$EDGE_HOST:443:$edge_ip" "https://$EDGE_HOST/healthz" || echo 000)
+            echo "attempt $attempt: HTTP $code"
+            [ "$code" != "000" ] && exit 0
+            [ "$attempt" = 3 ] || sleep 20
+          done
+          echo "the monitoring edge did not answer at all in three attempts"
+          exit 1
